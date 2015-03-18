@@ -1,0 +1,20 @@
+#!/bin/sh
+
+Init ()
+{
+	echo -n " setattr"
+}
+
+Config ()
+{
+	if [ -f /usr/bin/iceweasel -a -f /usr/bin/setfattr ]; then
+		setfattr -n user.pax.flags -v m /usr/bin/iceweasel
+		setfattr -n user.pax.flags -v m /usr/lib/iceweasel/plugin-container
+	fi
+
+	# Creating state file
+	touch /var/lib/live/config/setattr
+}
+
+Init
+Config
