@@ -1,0 +1,1191 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset='utf-8'>
+    <meta http-equiv="X-UA-Compatible" content="chrome=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+    <link href='https://fonts.googleapis.com/css?family=Architects+Daughter' rel='stylesheet' type='text/css'>
+    <link rel="stylesheet" type="text/css" href="stylesheets/stylesheet.css" media="screen">
+    <link rel="stylesheet" type="text/css" href="stylesheets/pygment_trac.css" media="screen">
+    <link rel="stylesheet" type="text/css" href="stylesheets/print.css" media="print">
+
+    <!--[if lt IE 9]>
+    <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+
+    <title>Live-Armor by fatemachine</title>
+  </head>
+
+  <body>
+    <header>
+      <div class="inner">
+        <h1>Live-Armor</h1>
+        <h2>Building Custom Linux Live Images for Security Sandboxing</h2>
+        <a href="https://github.com/fatemachine/live-armor" class="button"><small>View project on</small> GitHub</a>
+      </div>
+    </header>
+
+    <div id="content-wrapper">
+      <div class="inner clearfix">
+        <section id="main-content">
+          <h1>
+<a id="the-live-armor-guide" class="anchor" href="#the-live-armor-guide" aria-hidden="true"><span class="octicon octicon-link"></span></a>The Live-Armor Guide</h1>
+
+<h2>
+<a id="building-secure-live-images-with-debian-and-grsecurity" class="anchor" href="#building-secure-live-images-with-debian-and-grsecurity" aria-hidden="true"><span class="octicon octicon-link"></span></a>Building Secure Live Images with Debian and Grsecurity</h2>
+
+<p>This guide explains how to build custom live system images for security
+sandboxing using tools from the <a href="https://www.debian.org">Debian</a>
+<a href="http://www.live-systems.org/">Live Systems</a> project and
+<a href="https://www.grsecurity.net">Grsecurity</a>.</p>
+
+<p>For concreteness we will focus on building a custom live image for
+sandboxing the Firefox web browser (also known as Iceweasel in the Debian
+world).  However, the same tools and procedures will allow you to build any
+kind of Debian-based live image you want.</p>
+
+<ul>
+<li><a href="#motivation">Motivation</a></li>
+<li><a href="#prerequisites">Prerequisites</a></li>
+<li><a href="#limitations-and-alternatives">Limitations and Alternatives</a></li>
+<li><a href="#architecture">Architecture</a></li>
+<li><a href="#layer-1-the-host-system">Layer 1: The Host System</a></li>
+<li><a href="#layer-2-the-guest-image">Layer 2: The Guest Image</a></li>
+<li><a href="#layer-3-firejail">Layer 3: Firejail</a></li>
+<li><a href="#layer-4-firefoxiceweasel-customization">Layer 4: Firefox/Iceweasel Customization</a></li>
+</ul>
+
+<h2>
+<a id="motivation" class="anchor" href="#motivation" aria-hidden="true"><span class="octicon octicon-link"></span></a>Motivation</h2>
+
+<h3>
+<a id="the-browser-problem" class="anchor" href="#the-browser-problem" aria-hidden="true"><span class="octicon octicon-link"></span></a>The browser problem</h3>
+
+<p>If you're alive and technically aware in 2015, you know that Internet,
+operating system, and applications software are security disaster areas.
+End-user systems such as workstations and laptops are especially hard to
+protect against the growing tide of malware, most of it delivered via the
+Internet.</p>
+
+<p>After basic security measures have been taken, such as disabling unnecessary
+operating system services and firewalling network access, the largest attack
+surface on a typical end-user system today is the web browser.  Popular
+browsers are large and complex pieces of software, invariably written in
+<a href="https://en.wikipedia.org/wiki/Memory_safety">unsafe</a> languages for
+performance (although this may slowly be
+<a href="https://github.com/servo/servo">changing</a>).
+<a href="https://www.mozilla.org/en-US/security/advisories/">Critical</a>
+<a href="http://www.cvedetails.com/vulnerability-list/vendor_id-1224/product_id-15031/opec-1/Google-Chrome.html">vulnerabilities</a>
+are discovered in popular browsers every month, any one of which can allow a
+remote attacker to take complete control over the computer running the
+browser.  While this problem is now well known and recognized by browser
+vendors and efforts are being made to improve the status quo, building a
+secure browser has turned out to be a long and difficult road.  Meanwhile,
+users are left adrift and vulnerable, and even the technically skilled have
+few good options for securing web browser installations.</p>
+
+<h3>
+<a id="live-images" class="anchor" href="#live-images" aria-hidden="true"><span class="octicon octicon-link"></span></a>Live images</h3>
+
+<p>A <em>live image</em> is a complete operating system image file (usually in
+<a href="https://en.wikipedia.org/wiki/ISO_image">ISO format</a>) that can be loaded at
+system boot time from CD/DVD/USB media and that runs completely from RAM.
+No hard disk or any other form of persistent media is required.  Changes can
+be made normally to the running system, but all changes are lost when the
+system is powered down or reset. (Some live images support an optional
+persistence partition that allows the user to store data that persists
+across restarts.)</p>
+
+<p>Live images are a powerful tool for
+<a href="https://en.wikipedia.org/wiki/Sandbox_(computer_security)">sandboxing</a>.
+Even if the live operating system or applications are compromised during
+runtime, the next reboot will restore the system to its original clean
+state.  Simply using a live system is no guarantee of security, but it can
+make long-term compromise of a system significantly more difficult,
+especially when combined with other countermeasures as part of a
+top-to-bottom architecture that takes into account each layer from the
+lowest (physical setting) through the highest (user applications).</p>
+
+<h2>
+<a id="prerequisites" class="anchor" href="#prerequisites" aria-hidden="true"><span class="octicon octicon-link"></span></a>Prerequisites</h2>
+
+<p>This guide assumes you are an experienced systems administrator who is
+comfortable with Debian and with configuring and building the
+<a href="https://www.kernel.org/">Linux kernel</a>.</p>
+
+<h2>
+<a id="limitations-and-alternatives" class="anchor" href="#limitations-and-alternatives" aria-hidden="true"><span class="octicon octicon-link"></span></a>Limitations and Alternatives</h2>
+
+<p>The live image method is a relatively heavyweight approach to browser
+security.  Configuring and building a custom live image takes time and
+skill, and using one is harder than using a browser directly.  All browser
+customization must be done as part of live system configuration, which means
+that making even simple persistent changes to the browser require updating
+the live configuration and rebuilding the live image.  This is more work
+than most users are willing to put up with.</p>
+
+<p>There are a few alternatives:</p>
+
+<ul>
+<li><p>Use a pre-built live system.  This obviates the need to configure and
+build the live image yourself, and is ideal if you can find such an image
+that you trust and that closely matches your needs.  Unfortunately, few
+such images seem to be available today that are built with security in
+mind.  An exception is <a href="https://tails.boum.org/">Tails</a>, but it may not be
+suitable unless you want to route all data through Tor.</p></li>
+<li><p>Use a <a href="https://en.wikipedia.org/wiki/Chroot">chroot</a> jail.  Setting up a
+secure chroot environment is a difficult task, and should only be
+attempted if you are fully aware of the security weaknesses of vanilla
+chroot environments and employ kernel hardening measures to guard against
+them, such as the chroot restrictions available in
+<a href="https://www.grsecurity.net/">Grsecurity</a> kernels.  A chroot jail provides
+a relatively thin barrier between the guest and host environments and does
+not in itself provide the "clean boot" property of a live image.</p></li>
+<li><p>Use a <a href="https://en.wikipedia.org/wiki/Cgroups">namespace/cgroups</a> jail.
+Newer Linux kernels provide a range of other features that can be used to
+create container or jail environments.  As with chroot, such environments
+are difficult to configure securely, although tools such as
+<a href="https://l3net.wordpress.com/projects/firejail/">Firejail</a> can make this
+easier.  And as with chroot jails, programs running in a namespace jail
+can still make system calls directly into the host kernel, and thus are in
+a position to exploit kernel-level security flaws.</p></li>
+<li><p>Use a kernel security framework like
+<a href="https://en.wikipedia.org/wiki/AppArmor">AppArmor</a>,
+<a href="https://en.wikipedia.org/wiki/SELinux">SELinux</a>, or Grsecurity
+<a href="https://en.wikibooks.org/wiki/Grsecurity/The_RBAC_System">RBAC</a> to
+restrict the areas of the system that the application can access.  These
+frameworks serve mainly to prevent a compromised program from affecting
+the rest of the system.  They are best used along with other exploit
+prevention and sandboxing measures.</p></li>
+</ul>
+
+<h2>
+<a id="architecture" class="anchor" href="#architecture" aria-hidden="true"><span class="octicon octicon-link"></span></a>Architecture</h2>
+
+<p>In this guide we will assume a four-layer architecture that comprises:</p>
+
+<ol>
+<li>A host system, such as a workstation or laptop</li>
+<li>A guest live system, running as a virtual machine on the host system</li>
+<li>A container jail environment, running inside the guest system</li>
+<li>A Firefox/Iceweasel browser, running inside the jail</li>
+</ol>
+
+<p>We could consider variations, such as booting and running the live image on
+bare metal.  In fact, most of this guide concerns setting up the live image
+and applies equally well regardless of how and where the live system is run.
+One of the advantages of a live image is that it can be carried around on
+bootable read-only media and run from any system you happen to have access
+to, provided the image was built with the drivers needed to drive the host
+hardware.</p>
+
+<p>A word on virtual machines.  A virtual machine can never be more secure than
+the host it's running on.  Even if your guest operating system and
+applications are completely secure, all is lost if the host has been
+compromised.  The purpose of building a live image sandbox is to protect the
+host from the guest and its applications.  There is no way to protect the
+guest from the host.</p>
+
+<p>Running applications like web browsers within a virtual machine provides a
+relatively high degree of isolation between them and the host.  If the
+application is compromised, the attacker may gain control over the guest
+system, but attacking the host from the guest is a difficult task as long as
+basic host security precautions have been taken.  Although guest-to-host
+exploits that attack the hypervisor interface are
+<a href="https://lwn.net/Articles/619376/">possible</a>, such hypervisor flaws are rare
+compared to browser flaws and the hypervisor attack surface is much smaller.
+The risk can be mitigated further through
+<a href="https://en.wikipedia.org/wiki/PaX">kernel hardening</a> on both the host and
+guest systems, and by using a kernel security framework on the host to
+restrict the access of hypervisor processes.</p>
+
+<p>The architecture described in this guide is an example of the principle of
+<a href="https://en.wikipedia.org/wiki/Defense_in_depth_(computing)">defense in depth</a>.
+Multiple independent security layers are employed simultaneously, each
+providing a qualitatively different containment barrier around the
+vulnerable application.  These security layers are:</p>
+
+<ol>
+<li>A host system with a kernel hardened using PaX/Grsecurity, and
+restriction of hypervisor processes using Grsecurity Role Based Access
+Control (RBAC)</li>
+<li>A guest system built as a read-only live image with a PaX kernel</li>
+<li>A container jail environment inside the guest, created with
+<a href="https://l3net.wordpress.com/projects/firejail/">Firejail</a>
+</li>
+<li>Security-oriented application-level configuration of a Firefox browser,
+including default settings and extensions</li>
+</ol>
+
+<h2>
+<a id="layer-1-the-host-system" class="anchor" href="#layer-1-the-host-system" aria-hidden="true"><span class="octicon octicon-link"></span></a>Layer 1: The Host System</h2>
+
+<p>For our purposes, the only role of the host system is to provide an
+environment for building and running a live image.  We will assume that the
+host is a Linux system and that <a href="http://linux-kvm.org/">KVM</a> will be used to
+run the live image.</p>
+
+<h3>
+<a id="step-11-configure-paxgrsecurity" class="anchor" href="#step-11-configure-paxgrsecurity" aria-hidden="true"><span class="octicon octicon-link"></span></a>Step 1.1: Configure PaX/Grsecurity</h3>
+
+<p>This step is optional, but recommended.  Running a Linux kernel patched with
+PaX/Grsecurity on the host provides a significantly better security baseline
+than vanilla Linux.  The Grsecurity RBAC system also provides a way to
+restrict the access privileges of hypervisor (QEMU/KVM) processes and other
+programs running on the host.</p>
+
+<p>Setting up Grsecurity requires downloading the Linux kernel
+<a href="https://www.kernel.org/">source</a>, applying the
+<a href="https://www.grsecurity.net/">Grsecurity patch</a> that matches the kernel
+version, configuring the kernel (including PaX/Grsecurity parameters),
+building the kernel, and finally installing and booting it.  Assuming
+you have downloaded the kernel source as a file with a name like
+<code>linux-x.y.z.tar.xz</code> and the corresponding Grsecurity
+<a href="https://www.grsecurity.net/download.php">patch</a> as <code>grsecurity.patch</code>
+(the actual patch filename contains version and date information), the
+basic steps are:</p>
+
+<pre><code>$ tar axf linux-x.y.z.tar.xz
+$ cd linux-x.y.z
+$ patch -p1 &lt; ../grsecurity.patch
+$ make nconfig
+[edit and save kernel configuration]
+$ make deb-pkg
+</code></pre>
+
+<p>If all goes well, this will produce a <code>linux-image</code> Debian package file
+along with related package files for kernel headers, firmware,
+etc. according to Debian kernel-packaging conventions.  These <code>.deb</code>
+files can be installed directly with <code>dpkg -i</code>. Another way to build
+Debian packages from kernel source is to use
+<a href="https://packages.debian.org/kernel-package">kernel-package</a>.</p>
+
+<p>Refer to the
+<a href="https://en.wikibooks.org/wiki/Grsecurity">Grsecurity documentation</a> for
+instructions on applying the Grsecurity patch and configuring the
+PaX/Grsecurity kernel settings.  When configuring the kernel, try to
+eliminate any drivers and features that you don't need on the host system,
+and enable other important security options such as
+<a href="https://www.kernel.org/doc/Documentation/module-signing.txt">module signing</a>,
+<a href="https://lwn.net/Articles/584225/">stack protection</a>, and
+<a href="https://wiki.mozilla.org/Security/Sandbox/Seccomp">seccomp</a>.  Consult the
+Ubuntu
+<a href="https://wiki.ubuntu.com/Security/Features#Kernel_Hardening">Kernel Hardening</a>
+feature checklist for other important kernel security features and
+parameters.</p>
+
+<h3>
+<a id="step-12-configure-the-hypervisor" class="anchor" href="#step-12-configure-the-hypervisor" aria-hidden="true"><span class="octicon octicon-link"></span></a>Step 1.2: Configure the hypervisor</h3>
+
+<p>Ensure QEMU/KVM is installed on the host:</p>
+
+<pre><code># apt-get install qemu-kvm
+</code></pre>
+
+<p>For QEMU/KVM, hypervisor configuration takes the form of passing a set of
+command-line options to <code>kvm</code> (which itself is just a wrapper around
+<code>qemu-system-x86_64</code>).  Here is an example script that can be used to boot
+an image with some useful QEMU options:</p>
+
+<div class="highlight highlight-shell"><pre><span class="pl-c">#!/bin/sh</span>
+
+<span class="pl-s">export</span> QEMU_AUDIO_DRV=alsa
+
+<span class="pl-s3">exec</span> /usr/bin/kvm -cpu host -m 2048 -drive file=<span class="pl-vo">$1</span>,<span class="pl-k">if</span>=virtio,media=cdrom \
+    -balloon virtio \
+    -usbdevice tablet \
+    -soundhw hda \
+    -vga std \
+    -netdev user,id=network0 -device virtio-net,netdev=network0 \
+    -virtfs <span class="pl-s">local</span>,path=/tmp/guest_share,mount_tag=share,security_model=mapped-xattr</pre></div>
+
+<p>To use this script, pass the image you wish to boot as an argument.</p>
+
+<ul>
+<li>
+<code>-cpu host</code> tells QEMU to emulate the precise CPU that the host uses,
+rather than some different or more generic CPU.  This provides the best
+performance.</li>
+<li>
+<code>-m 2048</code> allocates 2GB of RAM to the guest (the default is 128MB).</li>
+<li>
+<code>-drive file=$1,if=virtio,media=cdrom</code> says to use the filename passed as
+the argument <code>$1</code> as the virtual boot drive, to treat it as CDROM media,
+and to represent it as a <a href="http://www.linux-kvm.org/page/Virtio">Virtio</a>
+device rather than emulating some form of disk hardware.  This requires
+Virtio driver support in the guest kernel.  Use Virtio interfaces and
+drivers whenever possible for best performance and feature support.</li>
+<li>
+<code>-balloon virtio</code> enables
+<a href="http://www.linux-kvm.org/page/Projects/auto-ballooning">balloon</a> support,
+allowing the guest to dynamically grow and release memory back to the
+host.  This requires memory balloon support in the guest kernel.</li>
+<li>
+<code>-usbdevice tablet</code> is necessary to prevent mismatched host/guest mouse
+pointers when using VNC.</li>
+<li>
+<code>-soundhw hda</code> instructs QEMU to emulate HDA PCI sound hardware.  Combined
+with the <code>export QEMU_AUDIO_DRV=alsa</code> line, this should provide working
+guest-to-host sound.  If you don't need sound, you can remove these two
+lines.  This requires HDA sound driver support in the guest kernel.</li>
+<li>
+<code>-vga std</code> enables high-resolution video mode support.</li>
+<li>
+<code>-netdev user,id=network0 -device virtio-net,netdev=network0</code> enables
+basic networking support, placing the guest on a private virtual network
+that can access the Internet via the host.</li>
+<li>
+<code>-virtfs local,path=/tmp/guest_share,mount_tag=share,security_model=mapped-xattr</code>
+sets up a shared directory between the host and the guest so that files
+can easily be moved back and forth.  The directory <code>/tmp/guest_share</code> on
+the host is made accessible to the guest using
+<a href="http://www.linux-kvm.org/page/9p_virtio">9p</a>.  This requires 9p Virtio
+support in the guest kernel.</li>
+</ul>
+
+<p>You should verify that you can use a script like the above to boot a vanilla
+live ISO image on the host.  Standard Debian
+<a href="http://cdimage.debian.org/debian-cd/current-live/amd64/iso-hybrid/">live images</a>
+are available from the <a href="http://live-systems.org/">Live Systems project</a>.</p>
+
+<p>To use a VNC display rather than QEMU's default SDL display, you can add an
+option like <code>-vnc 127.0.0.1:0</code> and use a VNC client to connect to QEMU on
+port 5900.</p>
+
+<p>There is a newer display technology for QEMU called
+<a href="http://www.linux-kvm.org/page/SPICE">SPICE/QXL</a>.  In theory, this should
+provide better graphics capabilities and performance, and also provides a
+mechanism for copy/paste clipboard transfer between the guest and host.  In
+testing on a Linux 3.18 host/guest with QEMU 2.1, however, using QXL led to
+guest hangs with the QEMU host process consuming 100% CPU when doing even
+basic browsing.  To enable SPICE/QXL you can use options like:</p>
+
+<pre><code>-vga qxl \
+-spice addr=127.0.0.1,port=5910,disable-ticketing,image-compression=off
+</code></pre>
+
+<p>You will need a <a href="https://packages.debian.org/spice-client">SPICE client</a> on
+the host to connect to the guest display.  You will also need to enable QXL
+in the guest kernel and install the
+<a href="https://packages.debian.org/xserver-xorg-video-qxl">QXL Xorg driver</a> in the
+guest.  For copy/paste clipboard support, you will also need the
+<a href="https://packages.debian.org/spice-vdagent">spice-vdagent</a> package in the
+guest.  See the SPICE documentation for details.</p>
+
+<p>Another option to consider is <code>-sandbox on</code>.  This enables
+<a href="https://wiki.mozilla.org/Security/Sandbox/Seccomp">seccomp</a> sandboxing of
+the QEMU process.  Unfortunately, in testing with Linux 3.18 and QEMU 2.1
+this led to instability of QEMU, so use this option with care.</p>
+
+<h3>
+<a id="step-13-secure-the-hypervisor" class="anchor" href="#step-13-secure-the-hypervisor" aria-hidden="true"><span class="octicon octicon-link"></span></a>Step 1.3: Secure the Hypervisor</h3>
+
+<p>The purpose of this step is to lock down the access that the hypervisor
+process has to the rest of the system.  Apart from read/write access to
+<code>/dev/kvm</code>, QEMU has no special access requirements and can safely be
+prevented from reading, writing, or executing most filesystem paths.
+Its network access can also be restricted to whatever is required for
+the applications you run within the VM.</p>
+
+<p>The procedure for enforcing access control depends on the security
+framework you're using on the host.  Most frameworks have a <em>learning
+mode</em> that allows you to run an application and exercise its
+functionality, and that then generates a whitelist policy that permits
+access to only those resources actually used by the application during
+the learning process.  Usually some degree of manual review and tuning
+of the generated access policy is needed.  Arriving at a good policy
+usually requires several tweaks and iterations.</p>
+
+<p>For example, if you're using the Grsecurity RBAC system and QEMU-x86_64,
+you can start with a stub entry in your policy file under the
+appropriate user role that looks like this:</p>
+
+<pre><code>subject /usr/bin/qemu-system-x86_64 lo {
+    /
+}
+</code></pre>
+
+<p>The <code>l</code> flag places the policy for this program in learning mode.  You
+can then use <code>gradm</code> as usual to enable RBAC in learning mode, exercise
+the program, and then generate an initial policy.  See the
+<a href="https://en.wikibooks.org/wiki/Grsecurity/The_RBAC_System">RBAC documentation</a>
+for details.</p>
+
+<p>Although Grsecurity RBAC is powerful, it uses a whole-system whitelist
+model, meaning that using it requires having a policy that covers all
+users and programs on the system.  In spite of its 'full system
+learning' mode, generating a working full-system poilcy is a difficult
+and time-consuming exercise, especially for desktop-oriented systems and
+those that depend on invasive multi-function services such as systemd.
+A far simpler, though less comprehensive, alternative is
+<a href="https://en.wikipedia.org/wiki/AppArmor">AppArmor</a>, which only restricts
+programs that have policies defined and has no concept of users or
+roles.</p>
+
+<h2>
+<a id="layer-2-the-guest-image" class="anchor" href="#layer-2-the-guest-image" aria-hidden="true"><span class="octicon octicon-link"></span></a>Layer 2: The Guest Image</h2>
+
+<p>Now that the host system has been prepared and QEMU is working, we are
+ready to configure and build the live image.</p>
+
+<h3>
+<a id="step-21-configuring-and-building-the-guest-kernel" class="anchor" href="#step-21-configuring-and-building-the-guest-kernel" aria-hidden="true"><span class="octicon octicon-link"></span></a>Step 2.1: Configuring and Building the Guest Kernel</h3>
+
+<p>Follow the same procedure used to configure and build the
+<a href="#step-11-configure-paxgrsecurity">host kernel</a>.  When configuring the
+guest kernel, note the following points:</p>
+
+<ul>
+<li>Remove all hardware drivers except for devices that QEMU can emulate
+and that you require.  For example, if you want sound support in the
+VM, configure the guest kernel to support Intel PCI HDAudio and start
+QEMU with the sound options given above.  You do not need
+hardware-specific drivers for disk, network, or graphics as these will
+be handled by Virtio — see below.</li>
+<li>Enable basic virtualization options such as:
+
+<ul>
+<li><code>CONFIG_PARAVIRT</code></li>
+<li><code>CONFIG_HYPERVISOR_GUEST</code></li>
+<li><code>CONFIG_KVM_GUEST</code></li>
+</ul>
+</li>
+<li>Many core devices such as block and network devices have optimized
+<em>Virtio</em> drivers designed specifically for virtual machines.  Whenever
+possible, use a Virtio driver instead of a hardware driver for a
+device that QEMU will have to emulate.  Ensure the following options
+are enabled:
+
+<ul>
+<li><code>CONFIG_VIRTIO_PCI</code></li>
+<li><code>CONFIG_VIRTIO_BLK</code></li>
+<li><code>CONFIG_VIRTIO_NET</code></li>
+<li><code>CONFIG_HW_RANDOM_VIRTIO</code></li>
+<li><code>CONFIG_VIRTIO_BALLOON</code></li>
+</ul>
+</li>
+<li>Enable virtualized graphics options:
+
+<ul>
+<li><code>CONFIG_DRM_CIRRUS_QEMU</code></li>
+<li><code>CONFIG_DRM_QXL</code></li>
+<li><code>CONFIG_DRM_BOCHS</code></li>
+</ul>
+</li>
+<li>Enable OverlayFS support.  This is <strong>required</strong> for a working live
+image:
+
+<ul>
+<li><code>CONFIG_OVERLAY_FS</code></li>
+</ul>
+</li>
+<li>If you want to be able to share host directories with the guest to
+easily move files back and forth, enable 9p support:
+
+<ul>
+<li><code>CONFIG_NET_9P</code></li>
+<li><code>CONFIG_NET_9P_VIRTIO</code></li>
+<li><code>CONFIG_9P_FS</code></li>
+</ul>
+</li>
+</ul>
+
+<h3>
+<a id="step-22-installing-the-live-build-tools-on-the-host" class="anchor" href="#step-22-installing-the-live-build-tools-on-the-host" aria-hidden="true"><span class="octicon octicon-link"></span></a>Step 2.2: Installing the Live-Build Tools on the Host</h3>
+
+<p>The only package you need to build live images is
+<a href="https://packages.debian.org/live-build">live-build</a>.  Several other
+packages such as <a href="https://packages.debian.org/live-boot">live-boot</a> and
+<a href="https://packages.debian.org/live-config">live-config</a> will be installed
+automatically into the live image during the build process.  Full
+documentation on these packages is available from the
+<a href="http://live-systems.org/">Live Systems project</a>.</p>
+
+<p>To get started with <code>live-build</code>, create a directory that will be used
+to store your live image configuration and build data (it should have at
+least 1 GB of free space available), and then run <code>lb config</code> to create
+a default live image configuration:</p>
+
+<pre><code>$ mkdir my_live_image
+$ cd my_live_image
+$ lb config
+[2015-03-02 14:41:16] lb config 
+P: Creating config tree for a debian/jessie/amd64 system
+P: Symlinking hooks...
+</code></pre>
+
+<p>This creates a configuration directory tree that live-build uses to
+determine how to build the live image.  If you don't make any changes to
+this tree, you will end up with a default Debian Live image.  You should
+try to build this default image now to ensure your system is set up
+correctly:</p>
+
+<pre><code># lb build 2&gt;&amp;1 | tee build.log
+</code></pre>
+
+<p>This command will run for some time and generate a lot of output as it
+downloads packages, builds the system in a chroot environment, and
+finally freezes the chroot tree as a
+<a href="https://en.wikipedia.org/wiki/SquashFS">squashfs</a> image and combines it
+with a bootloader and kernel into a bootable binary <code>.iso</code> image file.
+This final file will be placed in the directory where you ran <code>lb
+build</code>.</p>
+
+<p>Note: <code>lb build</code> expects to be run as root.  If the build system is
+running a Grsecurity kernel, you will also have to temporarily
+deactivate some Grsecurity chroot restrictions for the build to succeed,
+e.g. with</p>
+
+<pre><code># echo 0 &gt; /proc/sys/kernel/grsecurity/chroot_caps
+# echo 0 &gt; /proc/sys/kernel/grsecurity/chroot_deny_chmod
+# echo 0 &gt; /proc/sys/kernel/grsecurity/chroot_deny_mount
+# echo 0 &gt; /proc/sys/kernel/grsecurity/chroot_deny_mknod
+</code></pre>
+
+<h4>
+<a id="overlayfs-support" class="anchor" href="#overlayfs-support" aria-hidden="true"><span class="octicon octicon-link"></span></a>OverlayFS Support</h4>
+
+<p>Live images require some form of
+<a href="https://en.wikipedia.org/wiki/Union_filesystem">Union filesystem</a>
+support in the guest kernel.  Traditionally the Debian Live System tools
+have used <a href="http://aufs.sourceforge.net/">AuFS</a> for this.  Unfortunately,
+AuFS is an out-of-tree kernel patch that does not play nicely with
+Grsecurity.  There is now an in-tree alternative called OverlayFS,
+enabled with the <code>CONFIG_OVERLAY_FS</code> option in the guest kernel.
+However, at the time of writing, the Debian <code>live-boot</code> package does not
+properly support OverlayFS.  Debian
+<a href="https://bugs.debian.org/773881">bug 773881</a> has been opened for this.
+In the bug comments, a link is provided to a Git repository and branch
+that contains a patched version of live-boot 5.0a1.  Until the official
+live-boot package is updated, a working live-boot that supports
+OverlayFS can be built from this branch using <code>dpkg-buildpackage -b</code>.
+This will produce the files <code>live-boot_5.0~a1-1_all.deb</code> and
+<code>live-boot-initramfs-tools_5.0~a1-1_all.deb</code>.  These packages should be
+placed in the <code>config/packages.chroot</code> directory when configuring the
+live image (see next step) along with version 5.0a1 of live-config,
+overriding the default live-boot and live-config packages that would
+otherwise be installed when building the live image.</p>
+
+<h3>
+<a id="step-23-customizing-the-live-image" class="anchor" href="#step-23-customizing-the-live-image" aria-hidden="true"><span class="octicon octicon-link"></span></a>Step 2.3: Customizing the Live Image</h3>
+
+<p>You have now used <code>lb build</code> to successfully build a default Debian Live
+ISO image.  This image should be bootable and functional on virtual
+machines or real hardware.  This step covers how to customize the live
+image.</p>
+
+<p>The general procedure for making changes to your live image is to modify
+some files in your live configuration tree (the directory where you ran
+<code>lb config</code>) and then rebuild the live image by running the following
+sequence of commands:</p>
+
+<pre><code># lb clean
+# lb config
+# lb build
+</code></pre>
+
+<p>The <code>lb clean</code> command cleans up data from the last build, the <code>lb
+config</code> command updates the live image configuration based on your
+changes, and the <code>lb build</code> command actually builds the new image.</p>
+
+<p>From now on, we will assume that you are in your live-build root
+directory (the directory where you ran <code>lb config</code>).  Unless otherwise
+noted, path names will be given relative to this directory.  Most files
+and directories used for customization live under the <code>config/</code>
+subdirectory.</p>
+
+<h4>
+<a id="overview-of-live-image-configuration" class="anchor" href="#overview-of-live-image-configuration" aria-hidden="true"><span class="octicon octicon-link"></span></a>Overview of Live Image Configuration</h4>
+
+<p>See the
+<a href="http://live-systems.org/manual/current/html/live-manual/managing-a-configuration.en.html">Managing a configuration</a>
+section of the Live Systems manual for an overview of live image
+configuration.  Briefly, many basic options, like the target Debian
+distribution and architecture, can be specified as options to <code>lb
+config</code> — see <code>lb config --help</code> and <code>man lb_config</code> for details.
+Passing options to <code>lb config</code> results in modifications to one or more
+config files located in the <code>config</code> subdirectory of your build root.</p>
+
+<p>Although the manual recommends using auto scripts to manage a live image
+configuration, and for good reason, for simplicity we will make changes
+by editing configuration files directly.  These changes will be
+preserved on subsequent runs of <code>lb config</code>.  Be aware of the caveats of
+this approach as described in the manual and consider using auto scripts
+instead where possible.</p>
+
+<h4>
+<a id="choosing-packages-to-install" class="anchor" href="#choosing-packages-to-install" aria-hidden="true"><span class="octicon octicon-link"></span></a>Choosing Packages to Install</h4>
+
+<p>There are two ways to add packages of your choice to your live image.</p>
+
+<h5>
+<a id="adding-standard-debian-packages" class="anchor" href="#adding-standard-debian-packages" aria-hidden="true"><span class="octicon octicon-link"></span></a>Adding standard Debian packages</h5>
+
+<p>For standard Debian packages, create a file with a name ending in
+<code>.list.chroot</code> in the <code>config/package-lists</code> directory.  This file may
+contain a space-separated list of Debian package names.  The named
+packages will be retrieved and installed in the chroot during the
+build/bootstrap process.</p>
+
+<p>Here is an example package list for a Firefox/Iceweasel image:</p>
+
+<pre><code>$ cat config/package-lists/my.list.chroot
+task-english pm-utils alsa-utils unzip screen curl iceweasel
+spice-vdagent fluxbox attr xserver-xorg-video-modesetting
+xserver-xorg-video-qxl xserver-xorg-input-evdev xserver-xorg-input-mouse
+xinit x11-apps x11-utils x11-xserver-utils rxvt-unicode
+iceweasel-noscript iceweasel-perspectives iceweasel-refcontrol
+iceweasel-requestpolicy iceweasel-openinbrowser
+iceweasel-https-everywhere
+</code></pre>
+
+<p>Remarks on some of these packages:</p>
+
+<ul>
+<li>
+<code>attr</code> is required to set PaX flags on executables, assuming the
+<code>CONFIG_PAX_XATTR_PAX_FLAGS</code> kernel option was chosen (recommended).</li>
+<li>
+<code>pm-utils</code> is included for <code>pm-suspend</code> which can be used to put the
+system to sleep temporarily.  Sometimes suspending the VM is
+necessary before suspending the host to avoid a frozen VM when the
+host resumes.</li>
+<li>
+<code>alsa-utils</code> is included for basic sound utilities such as
+<code>alsamixer</code>.</li>
+<li>
+<code>spice-vdagent</code> is required for copy/paste support via QEMU SPICE,
+discussed earlier.</li>
+<li>
+<code>fluxbox</code> is a lightweight window manager for X.  You can choose any
+other window manager or desktop environment you like.</li>
+<li>The <code>xserver-xorg</code> packages select X drivers important for QEMU,
+corresponding to the kernel drivers selected earlier.</li>
+<li>The <code>iceweasel-*</code> packages select some useful Firefox extensions that
+happen to be packaged for Debian.  We will look at other ways to
+customize extensions later.</li>
+</ul>
+
+<h5>
+<a id="adding-custom-packages-including-the-guest-kernel" class="anchor" href="#adding-custom-packages-including-the-guest-kernel" aria-hidden="true"><span class="octicon octicon-link"></span></a>Adding custom packages (including the guest kernel)</h5>
+
+<p>For packages in the form of <code>.deb</code> files that are not part of your
+chosen Debian distribution (or that you want to override those in the
+distribution), simply place the files in the <code>config/packages.chroot</code>
+directory.  This is how we provide the guest kernel package we built
+earlier.  For example:</p>
+
+<pre><code>$ ls config/packages.chroot
+firejail_0.9.22_1_amd64.deb
+linux-image-3.19.1-grsec1_3.19.1-grsec1-1_amd64.deb
+live-boot_5.0~a1-1_all.deb
+live-boot-initramfs-tools_5.0~a1-1_all.deb
+live-config_5.0~a1-1_all.deb
+live-config-systemd_5.0~a1-1_all.deb
+</code></pre>
+
+<ul>
+<li>A <a href="https://l3net.wordpress.com/projects/firejail/">Firejail</a> package
+is included since it is not yet part of Debian.</li>
+<li>The <code>linux-image</code> package is the guest kernel built earlier.</li>
+<li>The <code>live-boot</code> packages are included here if they were custom-built
+for OverlayFS support as discussed earlier.</li>
+<li>The <code>live-config</code> packages are included here from <code>experimental</code> so
+that they match the <code>live-boot</code> package versions.</li>
+</ul>
+
+<h4>
+<a id="enabling-overlayfs" class="anchor" href="#enabling-overlayfs" aria-hidden="true"><span class="octicon octicon-link"></span></a>Enabling OverlayFS</h4>
+
+<p>In order to use OverlayFS, you must edit the file <code>config/chroot</code> and
+change</p>
+
+<pre><code>LB_UNION_FILESYSTEM="aufs"
+</code></pre>
+
+<p>to</p>
+
+<pre><code>LB_UNION_FILESYSTEM="overlay"
+</code></pre>
+
+<p>You must also pass a boot parameter to the kernel; see below.</p>
+
+<h4>
+<a id="customizing-kernel-boot-parameters" class="anchor" href="#customizing-kernel-boot-parameters" aria-hidden="true"><span class="octicon octicon-link"></span></a>Customizing Kernel Boot Parameters</h4>
+
+<p>In some cases it is necessary to modify the boot parameters passed to
+the live image kernel.  This is done by modifying the
+<code>LB_BOOTAPPEND_LIVE</code> option in <code>config/binary</code>, which defaults to:</p>
+
+<pre><code>LB_BOOTAPPEND_LIVE="boot=live components quiet splash"
+</code></pre>
+
+<p>Adding <code>union=overlay</code> is <strong>required</strong> for OverlayFS to work:</p>
+
+<pre><code>LB_BOOTAPPEND_LIVE="boot=live components quiet splash union=overlay"
+</code></pre>
+
+<p>Many runtime live image configuration options can also be passed in the
+form of kernel options; see
+<a href="http://live-systems.org/manpages/4.x/en/html/live-config.7.html">man live-config</a>
+for details.</p>
+
+<h4>
+<a id="custom-build-hooks" class="anchor" href="#custom-build-hooks" aria-hidden="true"><span class="octicon octicon-link"></span></a>Custom Build Hooks</h4>
+
+<p>Executable scripts can be placed in the <code>config/hooks</code> directory.  Their
+filenames should end with <code>.hook.chroot</code>.  These scripts will be run
+inside the chroot at the end of the build process, and can be used to
+make changes to the live system before it is frozen into the final
+image.</p>
+
+<p>For example, this mechanism can be used to set a root password.  Create
+an executable file called <code>config/hooks/0500-root-password.hook.chroot</code>
+containing:</p>
+
+<div class="highlight highlight-shell"><pre><span class="pl-c">#!/bin/sh</span>
+usermod -p <span class="pl-s1"><span class="pl-pds">'</span>$5$GxpbCxvGOmtudd$uL90C.ZOMY6WxI4.x32kTCv38dGiXYUlfWGzCQuHmr3<span class="pl-pds">'</span></span> root</pre></div>
+
+<p>Replace the argument to the <code>-p</code> option with the output of <code>mkpasswd</code>
+(available as part of the <a href="https://packages.debian.org/whois">whois</a>
+package).  See <code>man mkpasswd</code>.</p>
+
+<h4>
+<a id="customizing-live-image-contents" class="anchor" href="#customizing-live-image-contents" aria-hidden="true"><span class="octicon octicon-link"></span></a>Customizing Live Image Contents</h4>
+
+<p>The directory <code>config/includes.chroot</code> represents the <code>/</code> directory of
+the live image filesystem.  Files placed here will be added directly to
+the final live image, replacing existing ones if necessary.</p>
+
+<p>For example, to add some custom 'dotfiles' to the live user's home
+directory, put them in <code>config/includes.chroot/etc/skel</code>.  They will
+then end up in <code>/etc/skel</code> on the live system and will be copied to the
+live user's home directory when it is created during system startup.</p>
+
+<h4>
+<a id="custom-runtime-hooks" class="anchor" href="#custom-runtime-hooks" aria-hidden="true"><span class="octicon octicon-link"></span></a>Custom Runtime Hooks</h4>
+
+<p>Whereas build hooks are run during the live image build process, runtime
+hooks are run inside the live system during boot.  These hooks are
+processed by <code>live-config</code>.  To add a runtime hook, place an executable
+script in <code>config/includes.chroot/lib/live/config</code>.  You should examine
+the default hooks (found in <code>chroot/lib/live/config</code> after an <code>lb
+build</code>) or the live-config examples in
+<code>/usr/share/doc/live-config/examples/hooks</code>.</p>
+
+<h3>
+<a id="step-24-specific-customizations" class="anchor" href="#step-24-specific-customizations" aria-hidden="true"><span class="octicon octicon-link"></span></a>Step 2.4: Specific Customizations</h3>
+
+<h4>
+<a id="root-access" class="anchor" href="#root-access" aria-hidden="true"><span class="octicon octicon-link"></span></a>Root Access</h4>
+
+<p>By default, the live system has one user named <code>user</code> with password
+<code>live</code>.  This user can execute commands as root with <code>sudo</code> without
+specifying a password.  A better configuration is to disable sudo and
+set a root password.  We saw how to set a root password with a
+<a href="#custom-build-hooks">Custom Build Hook</a> above.  To disable sudo, add
+<code>live-config.noroot</code> to the kernel boot parameters list
+(<code>LB_BOOTAPPEND_LIVE</code> in <code>config/binary</code>).</p>
+
+<h4>
+<a id="pax-flags-and-iceweasel" class="anchor" href="#pax-flags-and-iceweasel" aria-hidden="true"><span class="octicon octicon-link"></span></a>PaX Flags and Iceweasel</h4>
+
+<p>If your guest kernel is configured for PaX and the process memory
+protection feature (<code>CONFIG_PAX_MPROTECT</code>) is enabled by default
+(recommended), then you will not be able to run Iceweasel without
+disabling memory protection on the <code>iceweasel</code> and <code>plugin-container</code>
+binaries in <code>/usr/lib/iceweasel</code>. (This suboptimal situation arises
+because Firefox uses JIT compilation for performance, which by its
+nature depends on memory regions that are both writable and executable.
+It is possible to compile Firefox without JIT, but this is not done for
+the standard Debian packages.)  This can be done with a
+<a href="#custom-runtime-hooks">runtime hook</a>.  For example, you can place an
+executable script like the following in
+<code>config/includes.chroot/lib/live/config/1200-setattr</code>:</p>
+
+<div class="highlight highlight-shell"><pre><span class="pl-c">#!/bin/sh</span>
+
+<span class="pl-en">Init</span> ()
+{
+    <span class="pl-s3">echo</span> -n <span class="pl-s1"><span class="pl-pds">"</span> setattr<span class="pl-pds">"</span></span>
+}
+
+<span class="pl-en">Config</span> ()
+{
+    <span class="pl-k">if</span> [ -f /usr/bin/iceweasel -a -f /usr/bin/setfattr ]<span class="pl-k">;</span> <span class="pl-k">then</span>
+        setfattr -n user.pax.flags -v m /usr/bin/iceweasel
+        setfattr -n user.pax.flags -v m /usr/lib/iceweasel/plugin-container
+    <span class="pl-k">fi</span>
+
+    <span class="pl-c"># Creating state file</span>
+    touch /var/lib/live/config/setattr
+}
+
+Init
+Config</pre></div>
+
+<p>The <code>setfattr</code> method only applies if you selected the
+<code>CONFIG_PAX_XATTR_PAX_FLAGS</code> option when configuring the guest kernel
+(recommended).</p>
+
+<h4>
+<a id="default-x-resolution" class="anchor" href="#default-x-resolution" aria-hidden="true"><span class="octicon octicon-link"></span></a>Default X Resolution</h4>
+
+<p>The X resolution can be changed at runtime with <code>xrandr</code>.  To change the
+default resolution, add a
+<a href="#customizing-kernel-boot-parameters">kernel boot parameter</a> like
+<code>live-config.xorg-resolution=1600x1200</code>.  See
+<a href="http://live-systems.org/manpages/4.x/en/html/live-config.7.html">man live-config</a>
+for details and other options.</p>
+
+<h4>
+<a id="mount-a-host-directory-with-9p" class="anchor" href="#mount-a-host-directory-with-9p" aria-hidden="true"><span class="octicon octicon-link"></span></a>Mount a Host Directory with <a href="https://www.kernel.org/doc/Documentation/filesystems/9p.txt">9p</a>
+</h4>
+
+<p>If you configured QEMU to share a host directory via 9p and you included
+9p support in your guest kernel, you may want to mount the share
+automatically at boot.  There are many ways to do this, but a quick hack
+that works is to create <code>config/includes.chroot/etc/rc.local</code> as an
+executable shell script and add a line like:</p>
+
+<pre><code>mount -t 9p -o trans=virtio,version=9p2000.L share /mnt
+</code></pre>
+
+<p>Here <code>share</code> is a tag that must match the tag you passed to QEMU via the
+<code>-virtfs</code> option.</p>
+
+<p>Be warned that 9p support can exhibit some instabilities.  In testing
+with Linux 3.18 and QEMU 2.1, passing <code>-sandbox on</code> caused writes to
+files over 9p to hang the writing process unrecoverably.  Even without
+<code>-sandbox on</code>, creation of files over 9p fails with 'Operation not
+supported' (but writing to existing files works).  This can be worked
+around by creating the file on the host before trying to write to it
+from the guest.</p>
+
+<p>Unrecoverable hangs on the guest may also arise with 9p following
+suspend/resume.  To work around this, unload the 9p kernel modules
+(<code>9p</code>, <code>9pnet</code>, <code>9pnet_virtio</code>) using <code>modprobe -r</code> before suspend.</p>
+
+<h2>
+<a id="layer-3-firejail" class="anchor" href="#layer-3-firejail" aria-hidden="true"><span class="octicon octicon-link"></span></a>Layer 3: Firejail</h2>
+
+<p><a href="https://l3net.wordpress.com/projects/firejail/">Firejail</a> can
+optionally be used to provide another sandbox layer inside the live
+system.  Firejail runs a program inside a 'container' environment that
+provides kernel namespace and filesystem isolation, as well as
+<a href="https://wiki.mozilla.org/Security/Sandbox/Seccomp">seccomp</a> system call
+restriction.  It is easy to use, supports a number of useful features
+and options, and can be used to sandbox any program.</p>
+
+<p>To install Firejail, simply download the <code>.deb</code> file from the Firejail
+project page (it is not yet available in the Debian repositories) and
+place it in <code>config/packages.chroot</code>.</p>
+
+<p>To run Firefox/Iceweasel with Firejail, run a command like:</p>
+
+<pre><code>$ firejail --debug iceweasel
+</code></pre>
+
+<p>The <code>--debug</code> option causes Firejail to produce verbose messages about
+what it's doing.  Another useful mode is:</p>
+
+<pre><code>$ mkdir ~/sandbox
+$ firejail --debug --private=$HOME/sandbox iceweasel
+</code></pre>
+
+<p>The <code>--private</code> option starts the program in a clean home directory,
+preventing access to the user's real home directory.  This is a good way
+to start a 'known clean' browser instance.</p>
+
+<h3>
+<a id="restricting-filesystem-access" class="anchor" href="#restricting-filesystem-access" aria-hidden="true"><span class="octicon octicon-link"></span></a>Restricting Filesystem Access</h3>
+
+<p>Firejail uses a blacklist method for restricting access to parts of
+filesystem.  It achieves this by remounting system directories like
+<code>/etc</code>, <code>/lib</code>, and <code>/usr</code> as read-only within the container by default,
+and fully blocking access to some files and directories by mounting an
+empty tmpfs filesystem on top of them.  (Seccomp filtering prevents
+these mounts from being changed within the container with calls to
+mount(2).)</p>
+
+<p>One omission in the defaults is that they leave the <code>/dev</code> directory
+accessible.  This can be fixed by, for example, creating a file called
+<code>/etc/firejail/blacklist-dev.inc</code> with contents like:</p>
+
+<pre><code>seccomp mknod
+
+blacklist /dev/autofs
+blacklist /dev/block
+...
+</code></pre>
+
+<p>The <code>seccomp mknod</code> line instructs Firejail to prevent the use of
+mknod(2) within the container so that new device files can't be created
+(the default in recent versions).  To prevent access to the pre-existing
+device files in <code>/dev</code>, each file or subdirectory of <code>/dev</code> must be
+listed on a separate <code>blacklist</code> line.  It is safe (and recommended) to
+blacklist nearly all device files (other than e.g. <code>/dev/null</code> and
+<code>/dev/urandom</code>) when running Firefox/Iceweasel.</p>
+
+<p>To use this file, add a line like</p>
+
+<pre><code>include /etc/firejail/blacklist-dev.inc
+</code></pre>
+
+<p>to <code>/etc/firejail/firefox.profile</code> or any other profile in <code>/etc/firejail</code>.</p>
+
+<h2>
+<a id="layer-4-firefoxiceweasel-customization" class="anchor" href="#layer-4-firefoxiceweasel-customization" aria-hidden="true"><span class="octicon octicon-link"></span></a>Layer 4: Firefox/Iceweasel Customization</h2>
+
+<p>If you are building a Firefox live image, you will want to customize
+things like the browser version, preferences, and extensions.</p>
+
+<h3>
+<a id="customizing-the-browser-version" class="anchor" href="#customizing-the-browser-version" aria-hidden="true"><span class="octicon octicon-link"></span></a>Customizing the Browser Version</h3>
+
+<p>If you want to install a version of Iceweasel other than the one in your
+target live image distribution, you will most likely have to resort to
+<a href="https://wiki.debian.org/AptPreferences">APT pinning</a>.  For instance,
+you may want to install the latest Firefox release version, which is
+usually available in Debian <code>experimental</code>.  You can do this by placing
+a couple of files in the <code>config/archives</code> directory.</p>
+
+<p>The <code>experimental.list.chroot</code> file:</p>
+
+<pre><code>deb http://ftp.debian.org/debian unstable main
+deb http://ftp.debian.org/debian experimental main
+</code></pre>
+
+<p>The <code>experimental.pref.chroot</code> file:</p>
+
+<pre><code>Package: iceweasel
+Pin: release a=experimental
+Pin-Priority: 995
+
+Package: *
+Pin: release a=unstable
+Pin-Priority: 1
+</code></pre>
+
+<p>This configuration directs APT to install the <code>iceweasel</code> package from
+<code>experimental</code> and to meet dependencies from <code>unstable</code> when they cannot
+be met from the target distribution.</p>
+
+<h3>
+<a id="customizing-preferences" class="anchor" href="#customizing-preferences" aria-hidden="true"><span class="octicon octicon-link"></span></a>Customizing Preferences</h3>
+
+<p>Most preferences are customized by placing files in
+<code>config/includes.chroot/etc/iceweasel/profile</code>.  When a user first
+launches Iceweasel, it creates a profile directory in
+<code>~/.mozilla/firefox</code> based on the contents of <code>/etc/iceweasel/profile</code>.</p>
+
+<p>Some files and directories that are useful for customization:</p>
+
+<ul>
+<li>
+<code>prefs.js</code> is the main browser settings and preferences file.</li>
+<li>
+<code>bookmarks.html</code> is the default bookmarks list.</li>
+<li>
+<code>extension-data</code> is a directory that some extensions use to store
+local data.</li>
+<li>
+<code>searchplugins</code> is the directory where different search engines are
+defined.  Each has a single <code>.xml</code> file in this directory.</li>
+<li>
+<code>search-metadata.json</code> contains user preferences related to search
+engines.</li>
+</ul>
+
+<p>You can easily customize your live image browser by copying files like
+those above from the profile directory of an already-customized Firefox
+installation into <code>config/includes.chroot/etc/iceweasel/profile</code>.</p>
+
+<h3>
+<a id="default-preferences-for-security-and-privacy" class="anchor" href="#default-preferences-for-security-and-privacy" aria-hidden="true"><span class="octicon octicon-link"></span></a>Default Preferences for Security and Privacy</h3>
+
+<p>Many of the default Firefox settings are suboptimal for security and
+privacy.  By way of example, this section provides a better set of
+defaults that can be included in your <code>prefs.js</code> file.  You should
+understand what each setting does before using it — see the
+Mozilla <a href="http://kb.mozillazine.org/About:config_entries">documentation</a>
+for details.</p>
+
+<div class="highlight highlight-javascript"><pre><span class="pl-c">/* Don't start finding text when any input is typed */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>accessibility.typeaheadfind.autostart<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+
+<span class="pl-c">/* Start with a simple blank page */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>browser.startup.page<span class="pl-pds">"</span></span>, <span class="pl-c1">1</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>browser.startup.homepage<span class="pl-pds">"</span></span>, <span class="pl-s1"><span class="pl-pds">"</span>about:about<span class="pl-pds">"</span></span>);
+
+<span class="pl-c">/* Don't send every URL we visit to Google */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>browser.safebrowsing.enabled<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>browser.safebrowsing.malware.enabled<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+
+<span class="pl-c">/* Don't save information entered in web forms and search bars */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>browser.formfill.enable<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+
+<span class="pl-c">/* Backspace goes back one page in history */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>browser.backspace_action<span class="pl-pds">"</span></span>, <span class="pl-c1">0</span>);
+
+<span class="pl-c">/* Ask where to save downloads */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>browser.download.useDownloadDir<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+
+<span class="pl-c">/* When JavaScript wants to open a new window, open a tab instead */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>browser.link.open_newwindow.restriction<span class="pl-pds">"</span></span>, <span class="pl-c1">0</span>);
+
+<span class="pl-c">/* Always use Private Browsing Mode */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>browser.privatebrowsing.autostart<span class="pl-pds">"</span></span>, <span class="pl-c1">true</span>);
+
+<span class="pl-c">/* Disable search suggestions */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>browser.search.suggest.enabled<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+
+<span class="pl-c">/* Limit state information saved between sessions */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>browser.sessionstore.max_tabs_undo<span class="pl-pds">"</span></span>, <span class="pl-c1">5</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>browser.sessionstore.resume_from_crash<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+
+<span class="pl-c">/* Turn off tab animations */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>browser.tabs.animate<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+
+<span class="pl-c">/* Turn off URL bar funny business */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>browser.urlbar.autocomplete.enabled<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>browser.urlbar.trimURLs<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+
+<span class="pl-c">/* Disallow JavaScript access to potentially dangerous APIs */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>dom.event.clipboardevents.enabled<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>dom.battery.enabled<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>dom.disable_window_open_feature.menubar<span class="pl-pds">"</span></span>, <span class="pl-c1">true</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>dom.disable_window_open_feature.personalbar<span class="pl-pds">"</span></span>, <span class="pl-c1">true</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>dom.disable_window_open_feature.scrollbars<span class="pl-pds">"</span></span>, <span class="pl-c1">true</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>dom.disable_window_open_feature.toolbar<span class="pl-pds">"</span></span>, <span class="pl-c1">true</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>dom.popup_maximum<span class="pl-pds">"</span></span>, <span class="pl-c1">10</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>dom.storage.default_quota<span class="pl-pds">"</span></span>, <span class="pl-c1">0</span>);
+
+<span class="pl-c">/* Override User-Agent data to mitigate browser fingerprinting.</span>
+<span class="pl-c"> * See https://panopticlick.eff.org/</span>
+<span class="pl-c"> */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>general.appname.override<span class="pl-pds">"</span></span>, <span class="pl-s1"><span class="pl-pds">"</span>Netscape<span class="pl-pds">"</span></span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>general.appversion.override<span class="pl-pds">"</span></span>, <span class="pl-s1"><span class="pl-pds">"</span>5.0 (Windows)<span class="pl-pds">"</span></span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>general.buildID.override<span class="pl-pds">"</span></span>, <span class="pl-c1">0</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>general.oscpu.override<span class="pl-pds">"</span></span>, <span class="pl-s1"><span class="pl-pds">"</span>Windows NT 6.2<span class="pl-pds">"</span></span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>general.platform.override<span class="pl-pds">"</span></span>, <span class="pl-s1"><span class="pl-pds">"</span>Win32<span class="pl-pds">"</span></span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>general.productSub.override<span class="pl-pds">"</span></span>, <span class="pl-s1"><span class="pl-pds">"</span>20100101<span class="pl-pds">"</span></span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>general.useragent.override<span class="pl-pds">"</span></span>, <span class="pl-s1"><span class="pl-pds">"</span>Mozilla/5.0 (Windows NT 6.2; rv:36.0) Gecko/20100101 Firefox/36.0<span class="pl-pds">"</span></span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>general.useragent.vendor<span class="pl-pds">"</span></span>, <span class="pl-s1"><span class="pl-pds">"</span><span class="pl-pds">"</span></span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>general.useragent.vendorSub<span class="pl-pds">"</span></span>, <span class="pl-s1"><span class="pl-pds">"</span><span class="pl-pds">"</span></span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>general.warnOnAboutConfig<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>intl.accept_languages<span class="pl-pds">"</span></span>, <span class="pl-s1"><span class="pl-pds">"</span>en-us,en;q=0.5<span class="pl-pds">"</span></span>);
+
+<span class="pl-c">/* Turn off "location aware browsing" */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>geo.enabled<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+
+<span class="pl-c">/* Turn off sending non-URL words entered in the URL bar to Google */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>keyword.enabled<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+
+<span class="pl-c">/* Turn off spell-checking */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>layout.spellcheckDefault<span class="pl-pds">"</span></span>, <span class="pl-c1">0</span>);
+
+<span class="pl-c">/* Disable cookies by default. Use an extension for site-specific</span>
+<span class="pl-c"> * whitelisting.</span>
+<span class="pl-c"> */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>network.cookie.cookieBehavior<span class="pl-pds">"</span></span>, <span class="pl-c1">2</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>network.cookie.thirdparty.sessionOnly<span class="pl-pds">"</span></span>, <span class="pl-c1">true</span>);
+
+<span class="pl-c">/* Disable IPv6 unless you want to use it. */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>network.dns.disableIPv6<span class="pl-pds">"</span></span>, <span class="pl-c1">true</span>);
+
+<span class="pl-c">/* Don't "proactively" perform DNS resolution */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>network.dns.disablePrefetch<span class="pl-pds">"</span></span>, <span class="pl-c1">true</span>);
+
+<span class="pl-c">/* Unneeded unless we're using v6 */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>network.http.fast-fallback-to-IPv4<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+
+<span class="pl-c">/* Enable pipelining for better performance */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>network.http.pipelining<span class="pl-pds">"</span></span>, <span class="pl-c1">true</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>network.http.pipelining.maxrequests<span class="pl-pds">"</span></span>, <span class="pl-c1">15</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>network.http.pipelining.ssl<span class="pl-pds">"</span></span>, <span class="pl-c1">true</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>network.http.proxy.pipelining<span class="pl-pds">"</span></span>, <span class="pl-c1">true</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>network.http.redirection-limit<span class="pl-pds">"</span></span>, <span class="pl-c1">5</span>);
+
+<span class="pl-c">/* Don't "proactively" fetch pages that haven't been requested */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>network.prefetch-next<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+
+<span class="pl-c">/* Disable Websockets by default */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>network.websocket.enabled<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+
+<span class="pl-c">/* Enable the Do-Not-Track header in HTTP requests */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>privacy.donottrackheader.enabled<span class="pl-pds">"</span></span>, <span class="pl-c1">true</span>);
+
+<span class="pl-c">/* Clear Private Data when closing the browser */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>privacy.sanitize.sanitizeOnShutdown<span class="pl-pds">"</span></span>, <span class="pl-c1">true</span>);
+
+<span class="pl-c">/* Disable unsafe RC4 ciphers */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>security.ssl3.ecdhe_ecdsa_rc4_128_sha<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>security.ssl3.ecdhe_rsa_rc4_128_sha<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>security.ssl3.rsa_rc4_128_md5<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>security.ssl3.rsa_rc4_128_sha<span class="pl-pds">"</span></span>, <span class="pl-c1">false</span>);
+
+<span class="pl-c">/* Disable WebGL by default */</span>
+user_pref(<span class="pl-s1"><span class="pl-pds">"</span>webgl.disabled<span class="pl-pds">"</span></span>, <span class="pl-c1">true</span>);</pre></div>
+
+<h3>
+<a id="customizing-extensions" class="anchor" href="#customizing-extensions" aria-hidden="true"><span class="octicon octicon-link"></span></a>Customizing Extensions</h3>
+
+<p>If the extension you want to add to your live image is already packaged
+for Debian (for example, <code>iceweasel-noscript</code>), you can install it as
+you would any other package by including its name in a file in
+<code>config/package-lists</code>.</p>
+
+<p>Otherwise, you will have to place either the packed or unpacked
+extension in the following directory:</p>
+
+<pre><code>config/includes.chroot/usr/share/mozilla/extensions/{ec8030f7-c20a-464f-9b0e-13a3a9e97384}
+</code></pre>
+
+<p>However, the packed extension (<code>.xpi</code>) file or unpacked directory must
+have a specific name.  To find this name, unpack the <code>install.rdf</code> file
+and inspect it:</p>
+
+<pre><code>$ unzip extension.xpi install.rdf
+</code></pre>
+
+<p>Near the top of this file there will be an <code>&lt;id&gt;</code> or <code>&lt;em:id&gt;</code> tag that
+looks similar to</p>
+
+<pre><code>&lt;id&gt;{2b10c1c8-a11f-4bad-fe9c-1c11e82cac42}&lt;/id&gt;
+</code></pre>
+
+<p>or</p>
+
+<pre><code>&lt;em:id&gt;https-everywhere@eff.org&lt;/em:id&gt;
+</code></pre>
+
+<p>To install an extension as a packed file, place it in the above
+directory with the name <code>${XID}.xpi</code>, where <code>${XID}</code> is the content of
+the <code>&lt;id&gt;</code> or <code>&lt;em:id&gt;</code> tag in the extension's <code>install.rdf</code> file.</p>
+
+<p>To install an extension as an unpacked directory, create a subdirectory
+in the above directory whose name is <code>${XID}</code>, then place the unzipped
+contents of the <code>.xpi</code> file in that directory.</p>
+        </section>
+
+        <aside id="sidebar">
+          <a href="https://github.com/fatemachine/live-armor/zipball/master" class="button">
+            <small>Download</small>
+            .zip file
+          </a>
+          <a href="https://github.com/fatemachine/live-armor/tarball/master" class="button">
+            <small>Download</small>
+            .tar.gz file
+          </a>
+
+          <p class="repo-owner"><a href="https://github.com/fatemachine/live-armor"></a> is maintained by <a href="https://github.com/fatemachine">fatemachine</a>.</p>
+
+          <p>This page was generated by <a href="https://pages.github.com">GitHub Pages</a> using the Architect theme by <a href="https://twitter.com/jasonlong">Jason Long</a>.</p>
+        </aside>
+      </div>
+    </div>
+
+  
+  </body>
+</html>
